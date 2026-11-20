@@ -442,6 +442,40 @@ ASR 有同音字误识，正文已按语义校正并标了时间戳，有疑问�
 5. **多做方案，少雕一个方案**（4.6）
    无论标志还是海报，把时间花在探索上，比花在打磨一个还没确定的方案上回报高得多。
 
+### 三个 API 盲区，以及各自的绕法
+
+设计方法论里有些规则**在 Canva API 上直接做不出来**。这三件经常被混为一谈，但根因不同、解法也不同。以下都是实跑验证的结果：
+
+| 需求 | 真实情况 | 绕法 | 代价 |
+| --- | --- | --- | --- |
+| **字距 / tracking** | Canva **编辑器支持**（高级文字格式→字距滑块，免费版可用），但 `format_text` 的 schema 里**没有**这个字段，且 `additionalProperties: false`。传 `letter_spacing` 或 `letterSpacing` 都**静默忽略**——不报错，`formatting.letterSpacing` 恒为 `0` | 在文字里插入不同宽度的 **Unicode 空格** | 文案变成「字符+空格」混排；细空格在缺字字体下可能显方框 |
+| **混合模式**（正片叠底/滤色/叠加） | Canva **产品本身就没有**，不是 API 没开。help 原话：「无论免费版还是付费版都不可用」，只有透明度 | 本地用 PIL/ImageMagick 把混合算好 → `upload-asset-from-url` → `insert_fill` 落版 | 混合结果变成一张位图，源图层不可再分别编辑 |
+| **自定义字体** | 两条路同时堵死：品牌字体上传要付费等级（当前账号 `list-brand-kits` 返回 `{"items":[]}`）；`fontRef` **改不了**——传 `font_ref` 或 `fontRef` 都被静默忽略，传不存在的 ID 也不报错 | 标题这类大字号固定文案：本地用 `ImageFont.truetype` 渲染成透明 PNG 再 `insert_fill` | 文字变成图片，不可编辑、放大可能糊；正文仍只能用图库字体 |
+
+**字距那五档的实测加宽量**（90pt 文字，全尺寸导出后逐行量暗像素跨度）：
+
+| 间隔字符 | 码位 | 单间隙加宽 | 相当于 |
+| --- | --- | --- | --- |
+| 发丝空格 | U+200A | 7.5 px | 0.083 em |
+| 窄空格 | U+2009 | 18 px | 0.200 em |
+| 四分空格 | U+2005 | 22.5 px | 0.250 em |
+| ASCII 空格 | U+0020 | 25 px | 0.278 em |
+| 全角空格 | U+3000 | 90 px | 1.000 em |
+
+要中间值就叠加（`U+2009` + `U+200A` ≈ 0.28em）。因为文案里混进了不可见字符，**导出后必须全尺寸核对**——这类问题缩略图完全看不出来。
+
+**混合模式那条链路的落地参数**（实测跑通）：
+
+```
+upload-asset-from-url({name, url})                    → { asset: { id: "MAH..." } }
+edit-design({operations: [{
+  type: "insert_fill", page_id, asset_type: "image",
+  asset_id, alt_text, top, left, width, height
+}]})                                                  → 生成一个 type:"rect" 元素
+```
+
+外部合成的画布尺寸取页面原始像素（如 1587x2245），导出后坐标就能 1:1 对齐。
+
 ### 一条经验教训：缩略图会骗人
 
 实测踩过：连续 4 轮 `keep_open` 的缩略图看着都还行，直到导出全尺寸 PNG 才看出
@@ -577,7 +611,11 @@ edit-design({ transaction_id, finalize: "cancel", operations: [] })
 ## 已知限制
 
 - **需要 Canva Pro 的能力**：`resize-design` 的完整形态、`autofill-design`、`*brand-template*` 系列。免费账号 `list-brand-kits` 返回 `{"items":[]}`。
-- **`upload-asset-from-url` 只吃公网 HTTPS**。本地图片要先托管到可公开访问的地址，或在 Canva 编辑器里手工上传。
+- **`upload-asset-from-url` 的抓取规则很反直觉，实测过**：Canva 的抓取器在 `canva.cn` 侧，**不接受签名 URL、不接受 `data:` URI、不接受 302 跳转**，`raw.githubusercontent.com` / `cdn.jsdelivr.net` 超时，`export-download.canva.cn` 的签名链接直接 `fetch_failed`。只有国内直连、无跳转、直接 200 返回图片字节的静态地址能过（gitee raw、baidu 静态图实测可过）。完整可达性表见 `canva/references/design-fundamentals.md` §7.2。
+- **三件常见需求 API 做不到，但各有出路**（`design-fundamentals.md` §7.1 有实测数据）：
+  - **字距/tracking**：`format_text` 没有该字段，`letter_spacing`/`letterSpacing` 都被静默忽略。解法是在文字里插 Unicode 空格（U+200A≈0.08em / U+2009≈0.2em / U+2005≈0.25em / U+0020≈0.28em / U+3000≈1em）。
+  - **混合模式**（正片叠底/滤色/叠加）：Canva 产品本身就不支持，免费付费都没有。只能在本地用 PIL/ImageMagick 算好，再上传落版。
+  - **换字体**：`fontRef` 改不了（传了静默忽略），品牌字体要付费等级。标题类大字可以把字体本地渲染成透明 PNG 再贴上去，正文只能用图库字体。
 - **速率限制**：`generate-design` 约 20 次/分，`export-design` 约 20 次/分，`generate-image` 约 10 次/分，`upload-asset-from-url` 约 30 次/分。
 - **`generate-design` 很慢**，几十秒到一分钟级。别设短超时。
 - **`search-designs` 是唯一干净的 ID 入口**——它返回的 `design_id` 是真的 11 位 ID，可以直接拿去 read/export，绕开 suggestion 链接的麻烦。
@@ -605,6 +643,18 @@ A：技术上可以，但没必要——白烧配额。技能会先让你选，�
 
 **Q：能让它自己决定选哪张吗？**
 A：可以，明确说「你自己定」就行。默认行为是**等你选**。
+
+**Q：能不能调字距？**
+A：API 不能，但能绕。`format_text` 没有字距字段，传了会被静默忽略。实际做法是在文字里插 Unicode 空格，实测五档：U+200A≈0.08em、U+2009≈0.2em、U+2005≈0.25em、U+0020≈0.28em、U+3000≈1em。代价是文案里混进不可见字符，改文案要连空格一起改，且**必须导出全尺寸核对**。
+
+**Q：为什么不能设混合模式做透叠效果？**
+A：Canva 产品就没这功能，不是 API 的问题。要么用透明度勉强近似，要么本地算好混合结果上传成图。后者效果准但图层不可再编辑。
+
+**Q：能换成我想要的字体吗？**
+A：API 改不了 `fontRef`（静默忽略）。免费账号也没有品牌字体上传。标题可以用「本地渲染成透明 PNG 再贴」的办法曲线救国，正文只能用图库字体靠字重和层级做区分。
+
+**Q：本地图片怎么传进 Canva？**
+A：`upload-asset-from-url` 只吃**国内直连、无跳转、直接 200 返回图片字节**的地址。签名 URL、`data:` URI、302 跳转全部失败，GitHub raw 和 jsDelivr 也会超时。最省事的是放 gitee 或自家静态站。
 
 **Q：本机能用但公司/学校网络不行？**
 A：`mcp.canva.cn` 和 `www.canva.cn` 都得通。如果被墙或被限制，本方案无解——这不是代理能解决的问题，是端点本身的可达性。
