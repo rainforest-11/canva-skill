@@ -82,8 +82,17 @@ Set-Clipboard -Value "https://www.canva.cn/d/<slug>"
 | **`references/poster-thinking.md`** | 形式感八级杠杆、图文四关系、改模板五步 | 每次做海报 |
 | **`references/design-fundamentals.md`** | 色彩（HSB/四象限/6:3:1）、排版（字距行距视觉动线）、字体（字面率/中宫/四大类）、图形（并交差补/混合模式/曲线/透视）、标志六路径 | 需要判断配色、字距、字体选择、图形关系时 |
 
-`design-fundamentals.md` 末尾有一节「在 Canva MCP 里怎么落地」，把每条规则映射到具体 operations，
-另列了**三件 API 做不到的事**（字偶间距微调、混合模式、自定义字体）——别硬做，换路径。
+`design-fundamentals.md` 末尾有一节「在 Canva MCP 里怎么落地」，把每条规则映射到具体 operations。
+其中 **7.1 三件"API 做不到"的事** 是实跑验证过的（不是推测），遇到下面情况直接查那一节，别现场试：
+
+| 你想做的 | 结论 | 怎么解 |
+| --- | --- | --- |
+| 字距 / tracking | `format_text` **没有**该字段，`letter_spacing`/`letterSpacing` 都被静默忽略 | 文字里插 **Unicode 空格**：U+200A≈0.08em、U+2009≈0.2em、U+2005≈0.25em、U+0020≈0.28em、U+3000≈1em。导出后**必须全尺寸核对** |
+| 混合模式（正片叠底/滤色/叠加） | Canva **产品就不支持**（免费付费都没有），只有透明度 | 本地 PIL/ImageMagick 算好 → `upload-asset-from-url` → `insert_fill` 落版 |
+| 换字体 | `fontRef` **改不了**，传了静默忽略；品牌字体要付费等级，当前账号无品牌工具箱 | 标题类大字：本地渲染成透明 PNG 再 `insert_fill`；正文用图库字体靠字重分级 |
+
+**7.2 是 `upload-asset-from-url` 的可达性实测表**：Canva 抓取器**不接受签名 URL、不接受 `data:` URI、不接受 302 跳转**，`raw.githubusercontent.com` 和 `cdn.jsdelivr.net` 超时，
+只有国内直连 200 的静态地址能过（gitee raw、baidu 静态图实测可过）。**别用 `export-download.canva.cn` 的签名链接往回传**，一定失败。
 
 核心是三条：
 
@@ -216,8 +225,11 @@ curl -sL -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML
 
 - `resize-design` 的完整能力、`autofill-design`、`*brand-template*` 系列**需 Canva Pro**；
   当前账号 `list-brand-kits` 返回 `{"items":[]}`，品牌模板走不通。
-- `upload-asset-from-url` 只吃**公网 HTTPS**。本机文件先托管到可公开访问的地址，
-  或改用编辑器手工上传。素材率限制约 30 次/分。
+- `upload-asset-from-url` 只吃**公网 HTTPS、无跳转、直接 200 返回图片字节**的地址。
+  Canva 抓取器**不接受签名 URL、不接受 `data:` URI、不接受 302**；`raw.githubusercontent.com`、
+  `cdn.jsdelivr.net` 实测超时，`export-download.canva.cn` 的签名链接实测 `fetch_failed`。
+  本地合成图请落到 gitee raw 这类国内直连地址（详见 `design-fundamentals.md` §7.2 实测表）。
+  素材率限制约 30 次/分。
 - `generate-design` 约 20 次/分，`export-design` 约 20 次/分，`generate-image` 约 10 次/分。
 - `get-logged-in-account-details` 虽在 tools/list 里，但调用必报
   `MCP error -32602: Tool get-logged-in-account-details not found`。**别用它验收连接**，
