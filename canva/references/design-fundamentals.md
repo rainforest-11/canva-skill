@@ -431,10 +431,59 @@
 | 文字图形化 | API 侧做不精确，交给 `generate-design` 生成 |
 | 曲线顺滑（圆角矩形） | `insert_shape` 的 `path`（只支持 M/L/H/V/C/S/A/Z，Q 和 T 不支持，**用 C/S 或 A 代替**） |
 
-**没有直接对应能力的三件事**（别硬做，换路径）：
-- 字偶间距 / tracking 微调 → 换字体或换字号层级
-- 混合模式（正片叠底/滤色/叠加）→ 在外部处理好图片再 `upload-asset-from-url`
-- 自定义字体 → 用图库字体，靠字重和层级制造差异
+### 7.1 三件"API 做不到"的事——全部实测过，各自有出路
+
+这三件常被混为一谈，但**根因完全不同，解法也完全不同**。以下结论均为本机 `edit-design` 实跑 + `export-design` 全尺寸测量所得，不是推测。
+
+**① 字距（tracking）——编辑器有，API 没暴露，但能用 Unicode 空格绕过**
+
+- `format_text` 的 `formatting` schema 里**没有**字距字段，且 `additionalProperties: false`。实测 `{"letter_spacing": 12}` 与 `{"letterSpacing": 12}` **都被静默忽略**：不报错、返回 `applied_unverified`，但 `document` 里 `formatting.letterSpacing` 恒为 `0`。两条路都试过了，别浪费轮次。
+- Canva 编辑器本身**支持**（顶部「高级文字格式」→ 字距滑块，免费版可用），只是 API 不开放。所以**不能靠人手工设一次就固化到模板**——模板里的字距在 API 复制/编辑后仍会丢。
+- **可用解法：插入不同宽度的 Unicode 空格**。同一行 90pt「实战分享会」，全尺寸 PNG 逐行量暗像素跨度：
+
+  | 间隔字符 | 码位 | 实测总宽 | 单间隙加宽 | 相当于 em |
+  | --- | --- | --- | --- | --- |
+  | 无 | — | 438 | 0 | 0 |
+  | 发丝空格 | U+200A | 468 | 7.5 | 0.083 |
+  | 窄空格 | U+2009 | 510 | 18 | 0.200 |
+  | 四分空格 | U+2005 | 528 | 22.5 | 0.250 |
+  | ASCII 空格 | U+0020 | 538 | 25 | 0.278 |
+  | 全角空格 | U+3000 | 798 | 90 | 1.000 |
+
+  五档加宽从 0.083em 到 1em，**副文字间距完全够用**。要中间值就叠加（`U+2009`+`U+200A` ≈ 0.28em）。中文标题拉字距、西文小标题做 tracking 都能这么做。
+  **代价**：文字变成"字符+空格"混排，改文案时得连空格一起改；`U+2009`/`U+2005`/`U+200A` 在部分字体缺失时可能退化成方框，**导出后必须全尺寸核对**。
+- 若只是想要"不那么挤"，成本更低的替代是**换字号层级**或**换字体**（字面率大的字体天然显松）。
+
+**② 混合模式（正片叠底/滤色/叠加）——Canva 产品就没有，只能外部合成**
+
+- `mcp__canva__help` 明确回答：Canva **不支持图层混合模式**，只能调透明度；「无论免费版还是付费版都不可用」。这不是 API 未暴露，是产品没做。别在 schema 里找。
+- **唯一可行路径：本地算好混合结果 → 上传 → `insert_fill` 落版**。实测这一环是通的：
+  1. `upload-asset-from-url({name, url})` → 返回 `asset.id`
+  2. `edit-design({operations:[{type:"insert_fill", page_id, asset_type:"image", asset_id, alt_text, top, left, width, height}]})` → 生成一个 `type:"rect"` 元素，`fill.media.mediaId` 指向该 asset，实测成功。
+- 混合本身用 PIL/ImageMagick 算（正片叠底 = 通道相乘，滤色 = 反相乘再反），画布尺寸取页面原始像素（如 1587x2245），导出后坐标就能 1:1 对齐。
+
+**③ 自定义字体——两条路同时被堵，退路同样是"渲染成图"**
+
+- **品牌字体上传**要付费等级（Canva 可画高级版/教育版/公益会员/商业版），当前账号 `list-brand-kits` 返回 `{"items":[]}`，**品牌工具箱不可用**。
+- **改 `fontRef` 也不行**：实测 `{"font_ref":"YAFdJj9hCws,0"}` 与 `{"fontRef":"YAFdJj9hCws,0"}` 都被静默忽略，`fontRef` 保持原值；传不存在的 ID `NOTAREALFONTID,0` 同样无效（连报错都没有）。所以 API 只能**读**字体，不能**换**。
+- **退路**：把你想要的字体在本地渲染成透明 PNG（PIL `ImageFont.truetype` + RGBA），走 ② 的 `upload-asset-from-url` → `insert_fill`。代价是文字变成图片、不可再编辑、放大可能糊，**只适合标题这类大字号固定文案**；正文仍需用图库字体。
+
+### 7.2 `upload-asset-from-url` 的真实可达性（实测，很反直觉）
+
+Canva 的抓取器在 `canva.cn` 侧，**它能访问什么和本机能不能访问是两件事**，而且**不认签名 URL 和 data URI**：
+
+| 图源 | 本机 curl | Canva 抓取器 |
+| --- | --- | --- |
+| `www.baidu.com/img/...png` | 200 | ✅ success |
+| `gitee.com/static/images/logo.svg` | 200 | ✅ success |
+| `raw.githubusercontent.com/...` | 200 | ❌ 超时 |
+| `cdn.jsdelivr.net/gh/...` | 200 | ❌ 超时 |
+| `picsum.photos/400/300` | 200（会 302） | ❌ `fetch_failed`（非 200） |
+| `www.canva.cn/api/short/<id>`（缩略图） | 200 带 UA | ❌ `fetch_failed` |
+| `export-download.canva.cn/...`（自己的导出签名链接） | 200 | ❌ `fetch_failed` |
+| `data:image/png;base64,...` | — | ❌ `'url' provided is invalid` |
+
+**结论**：本地合成图要回传，必须落到**国内可访问、无跳转、直接 200 返回图片字节**的公网地址。**gitee 仓库 raw** 是当前最省事的落点（本机 405 的那条只是路径不对，静态路径实测 Canva 能抓）。**传送带不接受签名 URL、不接受 data URI、不接受 302**，所以"先导出到 Canva 再传回去"这条路是不通的。
 
 ---
 
