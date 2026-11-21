@@ -299,15 +299,16 @@ search-designs({ query: "海报", limit: 3 })
 
 ### 第一问：走 Canva 模板，还是自行生图
 
-**任何设计任务，DSH 都会先问这一句**：
+**默认走 A（Canva 模板），不会每次都问。** 只有你说「自行生图」才切 B 路线：
 
 ```
-这次是走【Canva 模板】还是【自行生图】？
+（默认）走 Canva 模板 → generate-design → 你挑 → edit-design → export
+（你说自行生图时）本地渲染 → upload-asset-from-url → 落版 → export
 ```
 
 这两条路的成品完全不同，选错等于重做：
 
-| | **A. Canva 模板** | **B. 自行生图** |
+| | **A. Canva 模板**（默认） | **B. 自行生图** |
 | --- | --- | --- |
 | 底层 | 真 Canva 设计，**文字图层可继续编辑** | 一张位图，**文字烧死在图里** |
 | 素材 | Canva 图库（自带插画/图标/纹理） | 自己画/自己找，全部可控 |
@@ -317,8 +318,8 @@ search-designs({ query: "海报", limit: 3 })
 | 批量变体 | 不方便 | 天然适合 |
 | 适合 | 常规物料、要可编辑源文件 | 强风格（水墨/手绘/复古）、要指定字体、要混合模式、要「不像 AI」 |
 
-默认走 A，但 A 有三条硬限制你得知道：query 只能软引导、字体只能选图库、没有混合模式。
-需要指定字体或混合模式时选 B；B 的代价是交付一张位图，用户没法在 Canva 里改字。
+A 有三条硬限制你得知道：query 只能软引导、字体只能选图库、没有混合模式。
+这些场景可以主动说「自行生图」切到 B；B 的代价是交付一张位图，你没法在 Canva 里改字。
 
 ### 从零做一张海报（A 路线）
 
@@ -624,6 +625,8 @@ edit-design({ transaction_id, finalize: "cancel", operations: [] })
 2. `add_text` / `insert_shape` 这类**新建元素**传 `page_id`（`design_content.pages[0].id`，形如 `PBcBxnvRx70Hn9WY`），**不是** `locator_id`。元素级 `locator_id`（形如 `PB66CxV1knH785yl-LBlVJ6GW3LKGl2zk`，即 `page_id-element_id`）只用于改**已有**元素。
 
 **每次 `keep_open` 都要照 `next_required_action` 做**：把返回的 `thumbnail_urls[0]` 下下来看一眼，确认没有误改，再决定继续还是 commit。别连着盲改。
+
+**⚠️ 导出核对前必须先 commit**：事务还开着时调 `export-design`，导出的是**已提交的旧版面**，不是当前草稿。实测连续 3 次导出拿到同一张旧图（sha256 相同），只有 `finalize: "commit"` 返回 `{"status":"committed"}` 之后再导出，才拿到真正结果。所以顺序是「改 → 缩略图粗看 → **commit** → export 全尺寸核对」，反过来会白导出。
 
 ---
 
